@@ -46,7 +46,7 @@ use Infection\Configuration\Entry\PhpUnit;
 use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
 use Infection\Configuration\SourceFilter\PlainFilter;
-use Infection\Configuration\SourceFilter\PositionalPathsFilter;
+use Infection\Configuration\SourceFilter\PositionalArgumentsFilter;
 use Infection\Configuration\SourceFilter\SourceFileFilter;
 use Infection\Mutator\Mutator;
 use Infection\Mutator\Removal\MethodCallRemoval;
@@ -178,6 +178,39 @@ final class ConfigurationFactoryScenario
                     ->withLogs(
                         LogsBuilder::from($previousExpected->logs)
                             ->withTextLogFilePath($expectedTextFileLogPath)
+                            ->build(),
+                    )
+                    ->build(),
+            )
+        ;
+    }
+
+    public function forValueForJsonLogFilePath(
+        ?string $jsonFileLogPathInConfig,
+        ?string $jsonFileLogPathFromCliOption,
+        ?string $expectedJsonFileLogPath,
+    ): self {
+        $previousExpected = $this->expected;
+        Assert::isInstanceOf($previousExpected, Configuration::class);
+
+        return $this
+            ->withSchema(
+                $this->schemaBuilder
+                    ->withLogs(
+                        LogsBuilder::withMinimalTestData()
+                            ->withJsonLogFilePath($jsonFileLogPathInConfig)
+                            ->build(),
+                    ),
+            )
+            ->withInput(
+                $this->inputBuilder
+                    ->withJsonLogFilePath($jsonFileLogPathFromCliOption),
+            )
+            ->withExpected(
+                ConfigurationBuilder::from($previousExpected)
+                    ->withLogs(
+                        LogsBuilder::from($previousExpected->logs)
+                            ->withJsonLogFilePath($expectedJsonFileLogPath)
                             ->build(),
                     )
                     ->build(),
@@ -771,7 +804,7 @@ final class ConfigurationFactoryScenario
     }
 
     public function forSourceFilter(
-        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalPathsFilter|null $sourceFilter,
+        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalArgumentsFilter|null $sourceFilter,
         ?SourceFileFilter $expectedSourceFilter,
     ): self {
         $previousExpected = $this->expected;

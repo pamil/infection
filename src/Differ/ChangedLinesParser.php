@@ -35,10 +35,13 @@ declare(strict_types=1);
 
 namespace Infection\Differ;
 
-use function array_map;
-use function count;
 use function explode;
 use Infection\CannotBeInstantiated;
+use Infection\Differ\Throwable\InvalidDiffFormat;
+use Infection\Framework\Str;
+use InvalidArgumentException;
+use const PHP_INT_MAX;
+use const PREG_UNMATCHED_AS_NULL;
 use function Safe\preg_match;
 use function sprintf;
 use function str_starts_with;
@@ -58,9 +61,7 @@ final class ChangedLinesParser
 
     private const string DIFF_LINE_PATH_KEY = 'filePath';
 
-    private const string DIFF_LINE_RANGE_REGEX = '/\s\+(?<range>.*)\s@/';
-
-    private const string DIFF_LINE_RANGE_KEY = 'range';
+    private const string HUNK_HEADER_REGEX = '/\A@@ -[0-9]+(?:,(?<old>[0-9]+))? \+(?<start>[0-9]+)(?:,(?<new>[0-9]+))? @@(?: .*)?\z/';
 
     /**
      * @param string[] $lines
@@ -92,18 +93,115 @@ final class ChangedLinesParser
                     $result[$filePath][] = $changedLinesRange;
                 }
             } else {
-                // Only the hunk headers are read, which gives the changed lines only when the diff has no context lines.
-                Assert::false(
-                    str_starts_with($line, ' '),
-                    sprintf(
-                        'Expected a diff without context lines, e.g. the output of "git diff --unified=0", but found the following context line: "%s"',
-                        $line,
-                    ),
-                );
+                self::assertNoContext($line);
             }
         }
 
         return $result;
+    }
+
+    /**
+     * @throws InvalidDiffFormat
+     *
+     * @return array<non-empty-string, list<ChangedLinesRange>>
+     */
+    public static function parseDiffFile(string $contents, string $baseDirectory): array
+    {
+        $lines = explode("\n", Str::toUnixLineEndings($contents));
+
+        try {
+            // Keep the parse first: it has more accurate diagnostics upon failure.
+            $ranges = self::parse($lines, $baseDirectory);
+            self::validateDiffFile($lines);
+
+            return $ranges;
+        } catch (InvalidArgumentException $exception) {
+            throw InvalidDiffFormat::fromParsingFailure($exception);
+        }
+    }
+
+    /**
+     * @param list<string> $lines
+     */
+    private static function validateDiffFile(array $lines): void
+    {
+        $hasFileHeader = false;
+        $hunk = null;
+        $removed = 0;
+        $added = 0;
+
+        foreach ($lines as $line) {
+            if ($hunk !== null) {
+                if (str_starts_with($line, '-')) {
+                    ++$removed;
+
+                    continue;
+                }
+
+                if (str_starts_with($line, '+')) {
+                    ++$added;
+
+                    continue;
+                }
+
+                if ($line === '\No newline at end of file') {
+                    continue;
+                }
+
+                self::assertHunkCounts($hunk, $removed, $added);
+
+                $hunk = null;
+                $removed = 0;
+                $added = 0;
+            }
+
+            if (str_starts_with($line, 'diff --git ')) {
+                $hasFileHeader = true;
+
+                continue;
+            }
+
+            Assert::true(
+                $hasFileHeader || $line === '',
+                'Expected a "diff --git" file header before the diff content.',
+            );
+
+            if (str_starts_with($line, '@@')) {
+                $hunk = $line;
+            }
+        }
+
+        if ($hunk !== null) {
+            self::assertHunkCounts($hunk, $removed, $added);
+        }
+    }
+
+    private static function assertNoContext(string $line): void
+    {
+        Assert::false(
+            str_starts_with($line, ' '),
+            sprintf(
+                'Expected a diff without context lines, e.g. the output of "git diff --unified=0", but found the following context line: "%s"',
+                $line,
+            ),
+        );
+    }
+
+    private static function assertHunkCounts(string $hunk, int $removed, int $added): void
+    {
+        [, $expectedRemoved, $expectedAdded] = self::parseHunkHeader($hunk);
+
+        Assert::true(
+            $removed === $expectedRemoved && $added === $expectedAdded,
+            sprintf(
+                'Hunk "%s" declares %d removed and %d added lines, but contains %d removed and %d added lines.',
+                $hunk,
+                $expectedRemoved,
+                $expectedAdded,
+                $removed,
+                $added,
+            ),
+        );
     }
 
     private static function parseFilePathFromLine(string $line): string
@@ -132,41 +230,43 @@ final class ChangedLinesParser
      */
     private static function parseChangedLinesRangeFromLine(string $line): ?ChangedLinesRange
     {
-        preg_match(self::DIFF_LINE_RANGE_REGEX, $line, $matches);
-
-        Assert::keyExists(
-            $matches,
-            self::DIFF_LINE_RANGE_KEY,
-            sprintf(
-                'Added/modified lines can not be found in the following diff line: "%s"',
-                $line,
-            ),
-        );
-
-        $range = $matches[self::DIFF_LINE_RANGE_KEY];
-
-        $lineParts = array_map(
-            intval(...),
-            explode(',', $range),
-        );
-
-        Assert::countBetween($lineParts, 1, 2);
-
-        if (count($lineParts) === 1) {
-            [$line] = $lineParts;
-            Assert::natural($line);
-
-            return ChangedLinesRange::forLine($line);
-        }
-
-        [$startLine, $newCount] = $lineParts;
-        Assert::natural($startLine);
-        Assert::natural($newCount);
+        [$startLine, , $newCount] = self::parseHunkHeader($line);
 
         if ($newCount === 0) {
             return null;
         }
 
         return ChangedLinesRange::forRange($startLine, $newCount);
+    }
+
+    /**
+     * @return array{non-negative-int, non-negative-int, non-negative-int}
+     */
+    private static function parseHunkHeader(string $line): array
+    {
+        $matched = preg_match(
+            self::HUNK_HEADER_REGEX,
+            $line,
+            $matches,
+            PREG_UNMATCHED_AS_NULL,
+        );
+
+        Assert::same($matched, 1, sprintf('Invalid hunk header "%s".', $line));
+        Assert::notNull($matches, 'A matched hunk header must have captures.');
+
+        $startLine = (int) $matches['start'];
+        $removed = (int) ($matches['old'] ?? '1');
+        $added = (int) ($matches['new'] ?? '1');
+
+        Assert::natural($startLine, 'The destination line number must be non-negative.');
+        Assert::natural($removed, 'The removed line count must be non-negative.');
+        Assert::natural($added, 'The added line count must be non-negative.');
+
+        Assert::true(
+            (string) $startLine === $matches['start'] && $startLine <= PHP_INT_MAX - $added,
+            sprintf('The destination range in hunk "%s" is too large.', $line),
+        );
+
+        return [$startLine, $removed, $added];
     }
 }

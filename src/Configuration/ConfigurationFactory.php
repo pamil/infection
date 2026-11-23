@@ -50,18 +50,18 @@ use Infection\Configuration\Entry\PhpStan;
 use Infection\Configuration\Entry\PhpUnit;
 use Infection\Configuration\ProjectDirectoryProvider\ProjectDirectoryProvider;
 use Infection\Configuration\Schema\SchemaConfiguration;
-use Infection\Configuration\SourceFilter\ChangedLinesFilter;
+use Infection\Configuration\SourceFilter\ChangedLinesByFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
 use Infection\Configuration\SourceFilter\PlainFilter;
-use Infection\Configuration\SourceFilter\PositionalPathsFilter;
-use Infection\Configuration\SourceFilter\SourceFileFilter;
+use Infection\Configuration\SourceFilter\PositionalArgumentsFilter;
+use Infection\Configuration\SourceFilter\SourceFilter;
 use Infection\Differ\ChangedLinesParser;
+use Infection\Differ\Throwable\InvalidDiffFormat;
 use Infection\FileSystem\FileSystem;
 use Infection\FileSystem\Locator\FileOrDirectoryNotFound;
 use Infection\FileSystem\TmpDirProvider;
-use Infection\Framework\Str;
 use Infection\Git\Git;
 use Infection\Mutator\ConfigurableMutator;
 use Infection\Mutator\Mutator;
@@ -105,7 +105,7 @@ class ConfigurationFactory
         private readonly Git $git,
         private readonly ProjectDirectoryProvider $projectDirectoryProvider,
         private readonly CpuCoresCountProvider $cpuCoresCountProvider,
-        private readonly PositionalPathsClassifier $positionalPathsClassifier,
+        private readonly PositionalArgumentsClassifier $positionalArgumentsClassifier,
         private readonly FileSystem $fileSystem,
     ) {
     }
@@ -114,8 +114,10 @@ class ConfigurationFactory
      * @param non-empty-string|null $projectDirectory Absolute path.
      * @param positive-int|'auto'|'max'|null $threadCount
      * @param positive-int|'max'|null $dotsPerRow
+     * @param list<non-empty-string> $mutantIds
      *
      * @throws FileOrDirectoryNotFound
+     * @throws InvalidDiffFormat
      * @throws NoSourceFound
      */
     public function create(
@@ -139,7 +141,7 @@ class ConfigurationFactory
         ?string $testFrameworkExtraOptions,
         ?string $testFrameworkExtraArgs,
         ?string $staticAnalysisToolOptions,
-        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalPathsFilter|null $sourceFilter,
+        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalArgumentsFilter|null $sourceFilter,
         int|string|null $threadCount,
         string|int|null $dotsPerRow,
         bool $dryRun,
@@ -148,12 +150,13 @@ class ConfigurationFactory
         ?string $htmlLogFilePath,
         ?string $textLogFilePath,
         ?string $summaryJsonLogFilePath,
+        ?string $jsonLogFilePath,
         bool $useNoopMutators,
         bool $executeOnlyCoveringTestCases,
         ?string $mapSourceClassToTestStrategy,
         ?string $projectDirectory,
         ?string $staticAnalysisTool,
-        ?string $mutantId,
+        array $mutantIds,
     ): Configuration {
         $configDir = dirname($schema->pathname);
 
@@ -177,17 +180,23 @@ class ConfigurationFactory
         $mutators = $this->mutatorFactory->create($resolvedMutatorsArray, $useNoopMutators);
         $ignoreSourceCodeMutatorsMap = $this->retrieveIgnoreSourceCodeMutatorsMap($resolvedMutatorsArray);
 
-        [$sourceFilter, $testFrameworkExtraArgs] = $this->refineFilterIfNecessary(
+        $source = ResolvedSource::create(
+            $schema->source,
+            $configDir,
+        );
+
+        [$sourceFilter, $testFrameworkExtraArgs, $classifiedPositionalArguments] = $this->refineFilterIfNecessary(
             $sourceFilter,
-            $schema,
+            $source,
             $testFrameworkExtraArgs,
         );
 
         return new Configuration(
             processTimeout: $schema->timeout ?? self::DEFAULT_TIMEOUT,
-            source: $schema->source,
+            source: $source,
             sourceFilter: $sourceFilter,
-            logs: $this->retrieveLogs($schema->logs, $configDir, $useGitHubLogger, $gitlabLogFilePath, $htmlLogFilePath, $textLogFilePath, $summaryJsonLogFilePath),
+            classifiedPositionalArguments: $classifiedPositionalArguments,
+            logs: $this->retrieveLogs($schema->logs, $configDir, $useGitHubLogger, $gitlabLogFilePath, $htmlLogFilePath, $textLogFilePath, $summaryJsonLogFilePath, $jsonLogFilePath),
             logVerbosity: $logVerbosity,
             tmpDir: $namespacedTmpDir,
             phpUnit: $this->retrievePhpUnit($schema, $configDir),
@@ -225,7 +234,7 @@ class ConfigurationFactory
             mapSourceClassToTestStrategy: $mapSourceClassToTestStrategy,
             projectDirectory: $this->retrieveProjectDirectory($projectDirectory),
             staticAnalysisTool: $resultStaticAnalysisTool,
-            mutantId: $mutantId,
+            mutantIds: $mutantIds,
             configurationPathname: $schema->pathname,
             debugTestFrameworkLogFile: self::retrieveDebugTestFrameworkLogFile(
                 $schema->debugTestFrameworkLogFile,
@@ -431,21 +440,19 @@ class ConfigurationFactory
     }
 
     /**
-     * @return array{0: PlainFilter|null, 1: string|null}
+     * @return array{0: PlainFilter|null, 1: string|null, 2: ClassifiedPositionalArguments}
      */
-    private function resolvePositionalPathsFilter(
-        PositionalPathsFilter $sourceFilter,
-        SchemaConfiguration $schema,
+    private function resolvePositionalArgumentsFilter(
+        PositionalArgumentsFilter $sourceFilter,
+        ResolvedSource $source,
         ?string $testFrameworkExtraArgs,
     ): array {
-        $classified = $this->positionalPathsClassifier->classify(
-            $sourceFilter->paths,
-            $schema,
+        $classified = $this->positionalArgumentsClassifier->classify(
+            $sourceFilter->arguments,
+            $source,
         );
 
-        $resolvedFilter = $classified->sourcePaths !== []
-            ? new PlainFilter(array_values(array_unique($classified->sourcePaths)))
-            : null;
+        $resolvedFilter = PlainFilter::tryToCreate($classified->sourcePaths);
 
         if ($classified->testPaths !== []) {
             Assert::null(
@@ -456,24 +463,31 @@ class ConfigurationFactory
             $testFrameworkExtraArgs = implode(' ', $classified->testPaths);
         }
 
-        return [$resolvedFilter, $testFrameworkExtraArgs];
+        return [
+            $resolvedFilter,
+            $testFrameworkExtraArgs,
+            $classified,
+        ];
     }
 
     /**
      * @throws IOException
+     * @throws InvalidDiffFormat
      * @throws NoSourceFound
      *
-     * @return array{0: SourceFileFilter|null, 1: string|null}
+     * @return array{0: SourceFilter, 1: string|null, 2: ClassifiedPositionalArguments}
      */
     private function refineFilterIfNecessary(
-        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalPathsFilter|null $sourceFilter,
-        SchemaConfiguration $schema,
+        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalArgumentsFilter|null $sourceFilter,
+        ResolvedSource $source,
         ?string $testFrameworkExtraArgs,
     ): array {
-        if ($sourceFilter instanceof PositionalPathsFilter) {
-            [$sourceFilter, $testFrameworkExtraArgs] = $this->resolvePositionalPathsFilter(
+        $classified = new ClassifiedPositionalArguments([], [], []);
+
+        if ($sourceFilter instanceof PositionalArgumentsFilter) {
+            [$sourceFilter, $testFrameworkExtraArgs, $classified] = $this->resolvePositionalArgumentsFilter(
                 $sourceFilter,
-                $schema,
+                $source,
                 $testFrameworkExtraArgs,
             );
         }
@@ -486,35 +500,37 @@ class ConfigurationFactory
         }
 
         if ($sourceFilter instanceof GitDiffFileFilter) {
-            $sourceFilter = $this->resolveGitDiffFileFilter($sourceFilter, dirname($schema->pathname));
+            $sourceFilter = $this->resolveGitDiffFileFilter($sourceFilter, $source->basePath);
         }
 
-        return [$sourceFilter, $testFrameworkExtraArgs];
+        return [
+            new SourceFilter($sourceFilter, $classified->sourceSelectors),
+            $testFrameworkExtraArgs,
+            $classified,
+        ];
     }
 
     /**
      * @throws IOException
+     * @throws InvalidDiffFormat
      * @throws NoSourceFound
      */
-    private function resolveGitDiffFileFilter(GitDiffFileFilter $gitDiffFileFilter, string $configDir): ChangedLinesFilter
+    private function resolveGitDiffFileFilter(GitDiffFileFilter $gitDiffFileFilter, string $configDir): ChangedLinesByFileFilter
     {
         $pathname = Path::makeAbsolute($gitDiffFileFilter->pathname, $configDir);
 
         $diff = $this->fileSystem->readFile($pathname);
 
-        $changedLinesRangesByFilePath = ChangedLinesParser::parse(
-            explode("\n", Str::toUnixLineEndings($diff)),
-            $configDir,
-        );
+        $changedLinesRangesByFilePath = ChangedLinesParser::parseDiffFile($diff, $configDir);
 
         if ($changedLinesRangesByFilePath === []) {
             throw NoSourceFound::noChangedLinesForGitDiffFile($gitDiffFileFilter->pathname);
         }
 
-        return new ChangedLinesFilter($changedLinesRangesByFilePath);
+        return new ChangedLinesByFileFilter($changedLinesRangesByFilePath);
     }
 
-    private function retrieveLogs(Logs $logs, string $configDir, ?bool $useGitHubLogger, ?string $gitlabLogFilePath, ?string $htmlLogFilePath, ?string $textLogFilePath, ?string $summaryJsonLogFilePath): Logs
+    private function retrieveLogs(Logs $logs, string $configDir, ?bool $useGitHubLogger, ?string $gitlabLogFilePath, ?string $htmlLogFilePath, ?string $textLogFilePath, ?string $summaryJsonLogFilePath, ?string $jsonLogFilePath): Logs
     {
         $useGitHubLogger ??= $this->detectCiGithubActions();
 
@@ -536,6 +552,10 @@ class ConfigurationFactory
 
         if ($summaryJsonLogFilePath !== null) {
             $logs->setSummaryJsonLogFilePath($summaryJsonLogFilePath);
+        }
+
+        if ($jsonLogFilePath !== null) {
+            $logs->setJsonLogFilePath($jsonLogFilePath);
         }
 
         return new Logs(

@@ -39,12 +39,20 @@ use Infection\Command\BaseCommand;
 use Infection\Command\Git\Option\BaseOption;
 use Infection\Command\Git\Option\FilterOption;
 use Infection\Command\Option\ConfigurationOption;
+use Infection\Configuration\SourceFilter\ChangedLinesByFileFilter;
+use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
 use Infection\Console\IO;
+use Infection\Container\Container;
 use Infection\Differ\ChangedLinesRange;
+use Infection\FileSystem\Locator\FileOrDirectoryNotFound;
+use Infection\Git\Throwable\GitDiffFailed;
+use Infection\Source\Exception\NoSourceFound;
+use Psr\Log\LoggerInterface;
 use function Safe\getcwd;
 use function sprintf;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Filesystem\Path;
 use Webmozart\Assert\Assert;
@@ -54,6 +62,8 @@ use Webmozart\Assert\Assert;
  */
 final class GitChangedLinesCommand extends BaseCommand
 {
+    private const string DIFF_FILE_ARGUMENT = 'diff-file';
+
     public function __construct()
     {
         parent::__construct('git:changed-lines');
@@ -62,7 +72,16 @@ final class GitChangedLinesCommand extends BaseCommand
     protected function configure(): void
     {
         $this->setDescription(
-            'Finds the list of relative paths (relative to the current working directory) of the changed files that changed compared to the base branch used and matching the given filter.',
+            'Lists changed line ranges and their paths relative to the current working directory.',
+        );
+        $this->addArgument(
+            self::DIFF_FILE_ARGUMENT,
+            InputArgument::OPTIONAL,
+            sprintf(
+                'Git unified diff without context lines. The file path and paths in the diff are relative to the configuration directory. Cannot be combined with --%s or --%s.',
+                BaseOption::NAME,
+                FilterOption::NAME,
+            ),
         );
 
         ConfigurationOption::addOption($this);
@@ -73,17 +92,56 @@ final class GitChangedLinesCommand extends BaseCommand
     protected function executeCommand(IO $io): bool
     {
         $logger = LoggerFactory::create($io->getOutput());
+        $workingDirectory = getcwd();
+        $diffFile = self::getDiffFile($io);
 
-        $inputBase = BaseOption::get($io);
-        $inputFilter = FilterOption::get($io);
+        $inputBase = $diffFile === null ? BaseOption::get($io) : null;
 
         $container = $this->getApplication()->getContainer()->withValues(
             logger: $logger,
             output: $io->getOutput(),
             configFile: ConfigurationOption::get($io),
-            sourceFilter: new IncompleteGitDiffFilter($inputFilter, $inputBase),
+            sourceFilter: $diffFile === null
+                ? new IncompleteGitDiffFilter(FilterOption::get($io), $inputBase)
+                : new GitDiffFileFilter($diffFile),
+            projectDirectory: $diffFile === null ? null : $workingDirectory,
         );
 
+        if ($diffFile !== null) {
+            $sourceFilter = $container->getConfiguration()->sourceFilter->fileFilter;
+            Assert::isInstanceOf($sourceFilter, ChangedLinesByFileFilter::class);
+
+            $changedLines = $sourceFilter->changedLinesRangesByFilePath;
+        } else {
+            $changedLines = self::getChangedLinesFromGit(
+                $container,
+                $logger,
+                $inputBase,
+                $workingDirectory,
+            );
+        }
+
+        self::printChangedLines($changedLines, $workingDirectory, $io);
+
+        return true;
+    }
+
+    /**
+     * @param non-empty-string|null $inputBase
+     * @param non-empty-string $workingDirectory
+     *
+     * @throws FileOrDirectoryNotFound
+     * @throws GitDiffFailed
+     * @throws NoSourceFound
+     *
+     * @return non-empty-array<string, list<ChangedLinesRange>>
+     */
+    private static function getChangedLinesFromGit(
+        Container $container,
+        LoggerInterface $logger,
+        ?string $inputBase,
+        string $workingDirectory,
+    ): array {
         $git = $container->getGit();
 
         if ($inputBase === null) {
@@ -95,7 +153,8 @@ final class GitChangedLinesCommand extends BaseCommand
             );
         }
 
-        $sourceFilter = $container->getConfiguration()->sourceFilter;
+        $configuration = $container->getConfiguration();
+        $sourceFilter = $configuration->sourceFilter->fileFilter;
         Assert::isInstanceOf($sourceFilter, GitDiffFilter::class);
 
         $logger->notice(
@@ -105,18 +164,39 @@ final class GitChangedLinesCommand extends BaseCommand
             ),
         );
 
-        $workingDirectory = getcwd();
-
-        $changedLines = $git->getChangedLinesRangesByFilePaths(
+        return $git->getChangedLinesRangesByFilePaths(
             $sourceFilter->value,
             $sourceFilter->base,
-            $container->getConfiguration()->source->directories,
+            $configuration->source->directories,
             $workingDirectory,
         );
+    }
 
-        self::printChangedLines($changedLines, $workingDirectory, $io);
+    /**
+     * @return non-empty-string|null
+     */
+    private static function getDiffFile(IO $io): ?string
+    {
+        $input = $io->getInput();
 
-        return true;
+        /** @var string|null $diffFile */
+        $diffFile = $input->getArgument(self::DIFF_FILE_ARGUMENT);
+
+        if ($diffFile === null) {
+            return null;
+        }
+
+        Assert::false(
+            $input->hasParameterOption(['--' . BaseOption::NAME, '--' . FilterOption::NAME], onlyParams: true),
+            sprintf(
+                'The diff file argument cannot be combined with "--%s" or "--%s".',
+                BaseOption::NAME,
+                FilterOption::NAME,
+            ),
+        );
+        Assert::stringNotEmpty($diffFile, 'Expected a non-empty path for the diff file argument.');
+
+        return $diffFile;
     }
 
     /**

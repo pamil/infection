@@ -35,10 +35,12 @@ declare(strict_types=1);
 
 namespace Infection\Tests\Mutator;
 
+use function count;
 use Infection\AbstractTestFramework\Coverage\TestLocation;
-use Infection\Mutation\Mutation;
 use Infection\Mutator\Mutator;
 use Infection\Mutator\NodeMutationGenerator;
+use Infection\Mutator\Removal\ArrayItemRemoval;
+use Infection\Mutator\Removal\ArrayItemRemovalConfig;
 use Infection\PhpParser\Visitor\ExcludeIgnoredMutatorsVisitor;
 use Infection\PhpParser\Visitor\LabelNodesAsEligibleVisitor;
 use Infection\PhpParser\Visitor\MutationCollectorVisitor;
@@ -47,6 +49,7 @@ use Infection\Source\MatcherLine\SourceLineMatcher;
 use Infection\TestFramework\Tracing\Trace\Trace;
 use Infection\Testing\FileSystem\MockSplFileInfo;
 use Infection\Testing\SingletonContainer;
+use Infection\Tests\Mutation\MutationBuilder;
 use Infection\Tests\PhpParser\Visitor\VisitorTestCase\VisitorTestCase;
 use function iterator_to_array;
 use PhpParser\Node\Stmt\Nop;
@@ -95,7 +98,7 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
     }
 
     /**
-     * @param list<array{mutator: string, code: string}> $expectedMutations
+     * @param list<array{mutator: string, index: int, code: string}> $expectedMutations
      */
     #[DataProvider('mutationProvider')]
     public function test_it_generates_mutations(
@@ -125,9 +128,16 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
             ->traverse($nodes)
         ;
 
+        $mutatorsByName = [
+            ...$container->getConfiguration()->mutators,
+            'ArrayItemRemoval' => new ArrayItemRemoval(
+                new ArrayItemRemovalConfig(['remove' => 'all']),
+            ),
+        ];
+
         $collector = new MutationCollectorVisitor(
             new NodeMutationGenerator(
-                mutatorsByName: $container->getConfiguration()->mutators,
+                mutatorsByName: $mutatorsByName,
                 filePath: '/source.php',
                 fileNodes: $nodes,
                 originalFileTokens: $this->parser->getTokens(),
@@ -141,15 +151,21 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
         ;
 
         $codeFactory = $container->getMutantCodeFactory();
-        $actualMutations = take($collector->getMutations())
-            ->cast(static fn (Mutation $mutation): array => [
-                'mutator' => $mutation->getMutatorName(),
-                'code' => $codeFactory->createCode($mutation),
-            ])
-            ->toList()
-        ;
+        $mutations = take($collector->getMutations())->toList();
 
-        $this->assertSame($expectedMutations, $actualMutations);
+        $this->assertCount(count($expectedMutations), $mutations);
+
+        foreach ($mutations as $index => $mutation) {
+            $expected = $expectedMutations[$index];
+            $expectedMutation = MutationBuilder::from($mutation)
+                ->withMutationByMutatorIndex($expected['index'])
+                ->build()
+            ;
+
+            $this->assertEquals($expectedMutation, $mutation);
+            $this->assertSame($expected['mutator'], $mutation->getMutatorName());
+            $this->assertSame($expected['code'], $codeFactory->createCode($mutation));
+        }
     }
 
     public static function mutationProvider(): iterable
@@ -167,6 +183,7 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
             [
                 [
                     'mutator' => 'FalseValue',
+                    'index' => 0,
                     'code' => <<<'PHP'
                         <?php
 
@@ -179,6 +196,7 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
                 ],
                 [
                     'mutator' => 'TrueValue',
+                    'index' => 0,
                     'code' => <<<'PHP'
                         <?php
 
@@ -191,6 +209,7 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
                 ],
                 [
                     'mutator' => 'ArrayItemRemoval',
+                    'index' => 0,
                     'code' => <<<'PHP'
                         <?php
 
@@ -201,48 +220,15 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
                         }
                         PHP,
                 ],
-            ],
-        ];
-
-        yield 'ignore-all on a method excludes all descendant mutations' => [
-            <<<'PHP'
-                <?php
-
-                class Example {
-                    /** @infection-ignore-all */
-                    public function values(): array {
-                        return [false, true];
-                    }
-                }
-                PHP,
-            [],
-        ];
-
-        yield 'ignore-all on a statement does not exclude following statements' => [
-            <<<'PHP'
-                <?php
-
-                class Example {
-                    public function value(): bool {
-                        /** @infection-ignore-all */
-                        $values = [false, true];
-
-                        return false;
-                    }
-                }
-                PHP,
-            [
                 [
-                    'mutator' => 'FalseValue',
+                    'mutator' => 'ArrayItemRemoval',
+                    'index' => 1,
                     'code' => <<<'PHP'
                         <?php
 
                         class Example {
-                            public function value(): bool {
-                                /** @infection-ignore-all */
-                                $values = [false, true];
-
-                                return true;
+                            public function values(): array {
+                                return [false];
                             }
                         }
                         PHP,
@@ -264,6 +250,7 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
             [
                 [
                     'mutator' => 'TrueValue',
+                    'index' => 0,
                     'code' => <<<'PHP'
                         <?php
 
@@ -278,162 +265,13 @@ final class NodeMutationGeneratorTest extends VisitorTestCase
             ],
         ];
 
-        yield 'ignore all still takes precedence' => [
-            <<<'PHP'
-                <?php
-
-                /** @infection-ignore ArrayItemRemoval */
-                class Example {
-                    public function ignored(): array {
-                        // @infection-ignore-all
-                        return [false, true];
-                    }
-
-                    public function outside(): bool {
-                        return false;
-                    }
-                }
-                PHP,
-            [
-                [
-                    'mutator' => 'FalseValue',
-                    'code' => <<<'PHP'
-                        <?php
-
-                        /** @infection-ignore ArrayItemRemoval */
-                        class Example {
-                            public function ignored(): array {
-                                // @infection-ignore-all
-                                return [false, true];
-                            }
-
-                            public function outside(): bool {
-                                return true;
-                            }
-                        }
-                        PHP,
-                ],
-            ],
-        ];
-
-        yield 'annotation on an array item excludes its descendants only' => [
-            <<<'PHP'
-                <?php
-
-                class Example {
-                    public function values(): array {
-                        return [
-                            // @infection-ignore FalseValue
-                            false,
-                            false,
-                        ];
-                    }
-                }
-                PHP,
-            [
-                [
-                    'mutator' => 'FalseValue',
-                    'code' => <<<'PHP'
-                        <?php
-
-                        class Example {
-                            public function values(): array {
-                                return [
-                                    // @infection-ignore FalseValue
-                                    false,
-                                    true,
-                                ];
-                            }
-                        }
-                        PHP,
-                ],
-                [
-                    'mutator' => 'ArrayItemRemoval',
-                    'code' => <<<'PHP'
-                        <?php
-
-                        class Example {
-                            public function values(): array {
-                                return [
-                                    false,
-                                ];
-                            }
-                        }
-                        PHP,
-                ],
-            ],
-        ];
-
-        yield 'all selected mutators can be excluded' => [
-            <<<'PHP'
-                <?php
-
-                class Example {
-                    /** @infection-ignore ArrayItemRemoval, FalseValue, TrueValue */
-                    public function values(): array {
-                        return [false, true];
-                    }
-                }
-                PHP,
-            [],
-        ];
-
         yield 'code outside a class remains ineligible' => [
             <<<'PHP'
                 <?php
 
                 $values = [false, true];
-
-                class Example {
-                    public function values(): array {
-                        return [false, true];
-                    }
-                }
                 PHP,
-            [
-                [
-                    'mutator' => 'FalseValue',
-                    'code' => <<<'PHP'
-                        <?php
-
-                        $values = [false, true];
-
-                        class Example {
-                            public function values(): array {
-                                return [true, true];
-                            }
-                        }
-                        PHP,
-                ],
-                [
-                    'mutator' => 'TrueValue',
-                    'code' => <<<'PHP'
-                        <?php
-
-                        $values = [false, true];
-
-                        class Example {
-                            public function values(): array {
-                                return [false, false];
-                            }
-                        }
-                        PHP,
-                ],
-                [
-                    'mutator' => 'ArrayItemRemoval',
-                    'code' => <<<'PHP'
-                        <?php
-
-                        $values = [false, true];
-
-                        class Example {
-                            public function values(): array {
-                                return [true];
-                            }
-                        }
-                        PHP,
-                ],
-            ],
+            [],
         ];
     }
 

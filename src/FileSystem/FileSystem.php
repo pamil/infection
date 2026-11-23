@@ -105,7 +105,14 @@ class FileSystem extends SymfonyFilesystem
 
         if ($content === false) {
             // Same message as Symfony 7.4+: since PHP 8.6, the PHP warning no longer names the file.
-            throw new IOException(sprintf('Failed to read file "%s": %s', $filename, $error), 0, null, $filename);
+            throw new IOException(
+                sprintf(
+                    'Failed to read file "%s": %s',
+                    $filename,
+                    $error,
+                ),
+                path: $filename,
+            );
         }
 
         return $content;
