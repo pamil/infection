@@ -50,7 +50,7 @@ use Infection\Configuration\Entry\PhpStan;
 use Infection\Configuration\Entry\PhpUnit;
 use Infection\Configuration\ProjectDirectoryProvider\ProjectDirectoryProvider;
 use Infection\Configuration\Schema\SchemaConfiguration;
-use Infection\Configuration\SourceFilter\ChangedLinesFilter;
+use Infection\Configuration\SourceFilter\ChangedLinesByFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
@@ -515,7 +515,7 @@ class ConfigurationFactory
      * @throws InvalidDiffFormat
      * @throws NoSourceFound
      */
-    private function resolveGitDiffFileFilter(GitDiffFileFilter $gitDiffFileFilter, string $configDir): ChangedLinesFilter
+    private function resolveGitDiffFileFilter(GitDiffFileFilter $gitDiffFileFilter, string $configDir): ChangedLinesByFileFilter
     {
         $pathname = Path::makeAbsolute($gitDiffFileFilter->pathname, $configDir);
 
@@ -527,7 +527,7 @@ class ConfigurationFactory
             throw NoSourceFound::noChangedLinesForGitDiffFile($gitDiffFileFilter->pathname);
         }
 
-        return new ChangedLinesFilter($changedLinesRangesByFilePath);
+        return new ChangedLinesByFileFilter($changedLinesRangesByFilePath);
     }
 
     private function retrieveLogs(Logs $logs, string $configDir, ?bool $useGitHubLogger, ?string $gitlabLogFilePath, ?string $htmlLogFilePath, ?string $textLogFilePath, ?string $summaryJsonLogFilePath, ?string $jsonLogFilePath): Logs

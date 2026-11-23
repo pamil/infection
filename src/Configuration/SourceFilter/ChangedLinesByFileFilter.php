@@ -42,7 +42,7 @@ use Infection\Differ\ChangedLinesRange;
  *
  * Restricts the mutations to the given lines.
  */
-final readonly class ChangedLinesFilter implements SourceFileFilter
+final readonly class ChangedLinesByFileFilter implements SourceFileFilter
 {
     /**
      * @param non-empty-array<non-empty-string, list<ChangedLinesRange>> $changedLinesRangesByFilePath

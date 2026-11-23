@@ -38,7 +38,7 @@ namespace Infection\Tests\Source\Collector;
 use Exception;
 use Infection\Configuration\Entry\Source;
 use Infection\Configuration\ResolvedSource;
-use Infection\Configuration\SourceFilter\ChangedLinesFilter;
+use Infection\Configuration\SourceFilter\ChangedLinesByFileFilter;
 use Infection\Configuration\SourceFilter\FakeSourceFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\PlainFilter;
@@ -105,7 +105,7 @@ final class SourceCollectorFactoryTest extends TestCase
         ];
 
         yield 'changed lines filter' => [
-            new ChangedLinesFilter([
+            new ChangedLinesByFileFilter([
                 '/path/to/src/Service.php' => [ChangedLinesRange::forLine(3)],
             ]),
             new BasicSourceCollector(

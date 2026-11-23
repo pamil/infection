@@ -51,7 +51,7 @@ use Infection\Configuration\PositionalArgumentsClassifier;
 use Infection\Configuration\ProjectDirectoryProvider\ProjectDirectoryProvider;
 use Infection\Configuration\ResolvedSource;
 use Infection\Configuration\Schema\SchemaConfiguration;
-use Infection\Configuration\SourceFilter\ChangedLinesFilter;
+use Infection\Configuration\SourceFilter\ChangedLinesByFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
@@ -1546,7 +1546,7 @@ final class ConfigurationFactoryTest extends TestCase
                     sourceFilter: new GitDiffFileFilter(
                         __DIR__ . '/../../Fixtures/Files/git-diff-file/changes.diff',
                     ),
-                    expectedSourceFilter: new ChangedLinesFilter([
+                    expectedSourceFilter: new ChangedLinesByFileFilter([
                         '/path/to/src/Foo.php' => [ChangedLinesRange::forRange(10, 3)],
                     ]),
                 ),

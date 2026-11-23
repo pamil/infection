@@ -52,7 +52,7 @@ use Infection\Configuration\ProjectDirectoryProvider\ProjectDirectoryProvider;
 use Infection\Configuration\Schema\SchemaConfiguration;
 use Infection\Configuration\Schema\SchemaConfigurationFileLoader;
 use Infection\Configuration\Schema\SchemaConfigurationLoader;
-use Infection\Configuration\SourceFilter\ChangedLinesFilter;
+use Infection\Configuration\SourceFilter\ChangedLinesByFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
@@ -647,7 +647,7 @@ final class Container extends DIContainer
                         $configuration->source->directories,
                         dirname($configuration->configurationPathname),
                     ),
-                    $sourceFilter instanceof ChangedLinesFilter => new ChangedLinesSourceLineMatcher($sourceFilter->changedLinesRangesByFilePath),
+                    $sourceFilter instanceof ChangedLinesByFileFilter => new ChangedLinesSourceLineMatcher($sourceFilter->changedLinesRangesByFilePath),
                     default => new NullSourceLineMatcher(),
                 };
             },
