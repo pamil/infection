@@ -57,7 +57,7 @@ use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\GitDiffFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
 use Infection\Configuration\SourceFilter\PlainFilter;
-use Infection\Configuration\SourceFilter\PositionalPathsFilter;
+use Infection\Configuration\SourceFilter\PositionalArgumentsFilter;
 use Infection\Console\ConsoleOutput;
 use Infection\Console\Input\MsiParser;
 use Infection\Console\LogVerbosity;
@@ -94,6 +94,7 @@ use Infection\FileSystem\Locator\FileOrDirectoryNotFound;
 use Infection\FileSystem\Locator\RootsFileLocator;
 use Infection\FileSystem\Locator\RootsFileOrDirectoryLocator;
 use Infection\FileSystem\ProjectDirProvider;
+use Infection\Git\CiAwareGit;
 use Infection\Git\CommandLineGit;
 use Infection\Git\Git;
 use Infection\Logger\ArtefactCollection\InitialStaticAnalysisExecution\InitialStaticAnalysisExecutionLogger;
@@ -215,7 +216,7 @@ final class Container extends DIContainer
 
     public const DEFAULT_FORMATTER_NAME = MutationAnalysisLoggerName::DOT;
 
-    public const null DEFAULT_MUTANT_ID = null;
+    public const array DEFAULT_MUTANT_IDS = [];
 
     public const null DEFAULT_GIT_DIFF_FILTER = null;
 
@@ -232,6 +233,8 @@ final class Container extends DIContainer
     public const null DEFAULT_TEXT_LOGGER_PATH = null;
 
     public const null DEFAULT_SUMMARY_JSON_LOGGER_PATH = null;
+
+    public const null DEFAULT_JSON_LOGGER_PATH = null;
 
     public const bool DEFAULT_USE_NOOP_MUTATORS = false;
 
@@ -476,6 +479,7 @@ final class Container extends DIContainer
                 $container->getConfiguration()->mutateOnlyCoveredCode(),
                 $container->getMutationGenerationDiagnosticLogger(),
                 array_keys($container->getConfiguration()->mutators),
+                $container->getConfiguration()->sourceFilter->symbolSelectors,
             ),
             FileReporterFactory::class => static function (self $container): FileReporterFactory {
                 $config = $container->getConfiguration();
@@ -512,7 +516,7 @@ final class Container extends DIContainer
                             $output,
                             $container->getMetricsCalculator(),
                             !$config->mutateOnlyCoveredCode(),
-                            $config->mutantId,
+                            $config->mutantIds,
                             $config->ignoreMsiWithNoMutations,
                             $config->minMsi,
                             $config->minCoveredMsi,
@@ -618,18 +622,22 @@ final class Container extends DIContainer
                     $configuration->noProgress,
                     $configuration->processTimeout,
                     $configuration->ignoreSourceCodeMutatorsMap,
-                    $configuration->mutantId,
+                    $configuration->mutantIds,
                 );
             },
             MemoizedComposerExecutableFinder::class => static fn (): ComposerExecutableFinder => new MemoizedComposerExecutableFinder(new ConcreteComposerExecutableFinder()),
             ShellCommandRunner::class => SymfonyProcessShellCommandRunner::class,
-            Git::class => static fn (self $container): Git => new CommandLineGit(
-                $container->getShellCommandRunner(),
+            Git::class => static fn (self $container): Git => new CiAwareGit(
+                new CommandLineGit(
+                    $container->getShellCommandRunner(),
+                    $container->getLogger(),
+                ),
+                $container->getFileSystem(),
                 $container->getLogger(),
             ),
             SourceLineMatcher::class => static function (self $container): SourceLineMatcher {
                 $configuration = $container->getConfiguration();
-                $sourceFilter = $configuration->sourceFilter;
+                $sourceFilter = $configuration->sourceFilter->fileFilter;
 
                 return match (true) {
                     $sourceFilter instanceof GitDiffFilter => new GitDiffSourceLineMatcher(
@@ -649,9 +657,8 @@ final class Container extends DIContainer
 
                     return new MemoizedSourceCollector(
                         $container->get(SourceCollectorFactory::class)->create(
-                            $configuration->configurationPathname,
                             $configuration->source,
-                            $configuration->sourceFilter,
+                            $configuration->sourceFilter->fileFilter,
                         ),
                     );
                 },
@@ -704,6 +711,7 @@ final class Container extends DIContainer
      * @param non-empty-string|null $projectDirectory Absolute path.
      * @param positive-int|'auto'|'max'|null $threadCount
      * @param positive-int|'max'|null $dotsPerRow
+     * @param list<non-empty-string> $mutantIds
      */
     public function withValues(
         LoggerInterface $logger,
@@ -730,7 +738,7 @@ final class Container extends DIContainer
         ?string $testFrameworkExtraOptions = null,
         ?string $testFrameworkExtraArgs = null,
         ?string $staticAnalysisToolOptions = self::DEFAULT_STATIC_ANALYSIS_TOOL_OPTIONS,
-        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalPathsFilter|null $sourceFilter = null,
+        PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalArgumentsFilter|null $sourceFilter = null,
         int|string|null $threadCount = self::DEFAULT_THREAD_COUNT,
         string|int|null $dotsPerRow = self::DEFAULT_DOTS_PER_ROW,
         bool $dryRun = self::DEFAULT_DRY_RUN,
@@ -739,12 +747,13 @@ final class Container extends DIContainer
         ?string $htmlLogFilePath = self::DEFAULT_HTML_LOGGER_PATH,
         ?string $textLogFilePath = self::DEFAULT_TEXT_LOGGER_PATH,
         ?string $summaryJsonLogFilePath = self::DEFAULT_SUMMARY_JSON_LOGGER_PATH,
+        ?string $jsonLogFilePath = self::DEFAULT_JSON_LOGGER_PATH,
         bool $useNoopMutators = self::DEFAULT_USE_NOOP_MUTATORS,
         bool $executeOnlyCoveringTestCases = self::DEFAULT_EXECUTE_ONLY_COVERING_TEST_CASES,
         ?string $mapSourceClassToTestStrategy = self::DEFAULT_MAP_SOURCE_CLASS_TO_TEST_STRATEGY,
         ?string $projectDirectory = self::DEFAULT_LOGGER_PROJECT_ROOT_DIRECTORY,
         ?string $staticAnalysisTool = self::DEFAULT_STATIC_ANALYSIS_TOOL,
-        ?string $mutantId = self::DEFAULT_MUTANT_ID,
+        array $mutantIds = self::DEFAULT_MUTANT_IDS,
     ): self {
         $clone = clone $this;
 
@@ -823,12 +832,13 @@ final class Container extends DIContainer
                 htmlLogFilePath: $htmlLogFilePath,
                 textLogFilePath: $textLogFilePath,
                 summaryJsonLogFilePath: $summaryJsonLogFilePath,
+                jsonLogFilePath: $jsonLogFilePath,
                 useNoopMutators: $useNoopMutators,
                 executeOnlyCoveringTestCases: $executeOnlyCoveringTestCases,
                 mapSourceClassToTestStrategy: $mapSourceClassToTestStrategy,
                 projectDirectory: $projectDirectory,
                 staticAnalysisTool: $staticAnalysisTool,
-                mutantId: $mutantId,
+                mutantIds: $mutantIds,
             ),
         );
 

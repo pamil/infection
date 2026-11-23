@@ -39,7 +39,7 @@ use Infection\CannotBeInstantiated;
 use Infection\Configuration\SourceFilter\GitDiffFileFilter;
 use Infection\Configuration\SourceFilter\IncompleteGitDiffFilter;
 use Infection\Configuration\SourceFilter\PlainFilter;
-use Infection\Configuration\SourceFilter\PositionalPathsFilter;
+use Infection\Configuration\SourceFilter\PositionalArgumentsFilter;
 use Infection\Console\IO;
 use Infection\Container\Container;
 use Infection\Git\Git;
@@ -119,7 +119,7 @@ final class SourceFilterOptions
     /**
      * @param list<non-empty-string> $positionalPaths
      */
-    public static function get(IO $io, array $positionalPaths = []): PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalPathsFilter|null
+    public static function get(IO $io, array $positionalPaths = []): PlainFilter|IncompleteGitDiffFilter|GitDiffFileFilter|PositionalArgumentsFilter|null
     {
         $input = $io->getInput();
 
@@ -138,7 +138,7 @@ final class SourceFilterOptions
         }
 
         if ($positionalPaths !== []) {
-            return new PositionalPathsFilter($positionalPaths);
+            return new PositionalArgumentsFilter($positionalPaths);
         }
 
         return $filter ?? $gitFilter;
