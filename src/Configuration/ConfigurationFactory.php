@@ -58,10 +58,10 @@ use Infection\Configuration\SourceFilter\PlainFilter;
 use Infection\Configuration\SourceFilter\PositionalArgumentsFilter;
 use Infection\Configuration\SourceFilter\SourceFilter;
 use Infection\Differ\ChangedLinesParser;
+use Infection\Differ\Throwable\InvalidDiffFormat;
 use Infection\FileSystem\FileSystem;
 use Infection\FileSystem\Locator\FileOrDirectoryNotFound;
 use Infection\FileSystem\TmpDirProvider;
-use Infection\Framework\Str;
 use Infection\Git\Git;
 use Infection\Mutator\ConfigurableMutator;
 use Infection\Mutator\Mutator;
@@ -117,6 +117,7 @@ class ConfigurationFactory
      * @param list<non-empty-string> $mutantIds
      *
      * @throws FileOrDirectoryNotFound
+     * @throws InvalidDiffFormat
      * @throws NoSourceFound
      */
     public function create(
@@ -471,6 +472,7 @@ class ConfigurationFactory
 
     /**
      * @throws IOException
+     * @throws InvalidDiffFormat
      * @throws NoSourceFound
      *
      * @return array{0: SourceFilter, 1: string|null, 2: ClassifiedPositionalArguments}
@@ -510,6 +512,7 @@ class ConfigurationFactory
 
     /**
      * @throws IOException
+     * @throws InvalidDiffFormat
      * @throws NoSourceFound
      */
     private function resolveGitDiffFileFilter(GitDiffFileFilter $gitDiffFileFilter, string $configDir): ChangedLinesFilter
@@ -518,10 +521,7 @@ class ConfigurationFactory
 
         $diff = $this->fileSystem->readFile($pathname);
 
-        $changedLinesRangesByFilePath = ChangedLinesParser::parse(
-            explode("\n", Str::toUnixLineEndings($diff)),
-            $configDir,
-        );
+        $changedLinesRangesByFilePath = ChangedLinesParser::parseDiffFile($diff, $configDir);
 
         if ($changedLinesRangesByFilePath === []) {
             throw NoSourceFound::noChangedLinesForGitDiffFile($gitDiffFileFilter->pathname);

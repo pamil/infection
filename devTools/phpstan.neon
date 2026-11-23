@@ -238,12 +238,6 @@ parameters:
             message: '#expects class-string, string given#'
             path: ../src/Framework/ClassName.php
 
-        # This is a valid case of magic number
-        -
-            message: "#Do not use magic number as a function argument. Move to constant with a suitable name.#"
-            count: 1
-            path: ../src/Differ/ChangedLinesParser.php
-
         # PHPStan cannot really properly infer that we throw those here
         -
             message: '#^Method .+\\Container::getConfiguration\(\) has .+\\(FileOrDirectoryNotFound|NoSourceFound) in PHPDoc \@throws tag but it.+s not thrown\.$#'

@@ -897,6 +897,12 @@ count = 1
 [[issues]]
 file = "src/Container/Container.php"
 code = "unhandled-thrown-type"
+message = 'Potentially unhandled exception `Infection\Differ\Throwable\InvalidDiffFormat` in `{closure:src/Container/Container.php:805:13}`.'
+count = 1
+
+[[issues]]
+file = "src/Container/Container.php"
+code = "unhandled-thrown-type"
 message = 'Potentially unhandled exception `Infection\FileSystem\Locator\FileOrDirectoryNotFound` in `Infection\Container\Container::getProcessRunner`.'
 count = 1
 
@@ -1346,15 +1352,9 @@ count = 1
 
 [[issues]]
 file = "src/Differ/ChangedLinesParser.php"
-code = "possibly-null-argument"
-message = "Argument #2 of function `explode` is possibly `null`, but parameter type `string` does not accept it."
-count = 1
-
-[[issues]]
-file = "src/Differ/ChangedLinesParser.php"
 code = "possibly-null-array-access"
 message = "Cannot perform array access on possibly `null` value."
-count = 2
+count = 1
 
 [[issues]]
 file = "src/Differ/ChangedLinesParser.php"
