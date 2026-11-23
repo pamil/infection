@@ -261,6 +261,41 @@ final class GitChangedLinesCommandTest extends TestCase
         $tester->execute(['--base' => '   ']);
     }
 
+    public function test_it_outputs_changed_lines_from_a_diff_file(): void
+    {
+        $tester = $this->createCommandTester($this->createStub(Git::class));
+
+        $tester->execute(
+            ['diff-file' => '../../../Fixtures/Files/git-diff-file/changes.diff'],
+            [
+                'verbosity' => OutputInterface::VERBOSITY_VERBOSE,
+                'capture_stderr_separately' => true,
+            ],
+        );
+
+        $tester->assertCommandIsSuccessful();
+        $this->assertSame("src/Foo.php: [10,12]\n", $tester->getDisplay(normalize: true));
+        $this->assertSame('', $tester->getErrorOutput(normalize: true));
+    }
+
+    #[DataProvider('incompatibleDiffFileOptionProvider')]
+    public function test_it_rejects_git_options_with_a_diff_file(string $option, string $value): void
+    {
+        $tester = $this->createCommandTester($this->createStub(Git::class));
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The diff file argument cannot be combined with "--base" or "--filter".');
+
+        $tester->execute(['diff-file' => 'changes.diff', $option => $value]);
+    }
+
+    public static function incompatibleDiffFileOptionProvider(): iterable
+    {
+        yield '--base' => ['--base', 'origin/main'];
+
+        yield '--filter with the default value' => ['--filter', Git::DEFAULT_GIT_DIFF_FILTER];
+    }
+
     public function test_it_rejects_blank_filter_option(): void
     {
         $git = $this->createStub(Git::class);
